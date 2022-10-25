@@ -134,6 +134,7 @@ const StyledHeader = styled.header`
       }
       .main-nav .ant-menu-submenu-title > svg {
         top: ${theme.gridUnit * 5.25}px;
+        background-color:${theme.colors.primary.base}
       }
       @media (max-width: 767px) {
         .navbar-brand {
@@ -274,7 +275,7 @@ export function Menu({
   return (
     <StyledHeader className="top" id="main-menu" role="navigation">
       <Global styles={globalStyles(theme)} />
-      <Row>
+      <Row style={{backgroundColor: "#20A7C9"}}>
         <Col md={16} xs={24}>
           <Tooltip
             id="brand-tooltip"
@@ -295,6 +296,7 @@ export function Menu({
             mode={showMenu}
             data-test="navbar-top"
             className="main-nav"
+            style={{backgroundColor: "#20A7C9"}}
           >
             {menu.map((item, index) => {
               const props = {

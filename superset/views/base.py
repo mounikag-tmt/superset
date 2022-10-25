@@ -310,6 +310,7 @@ def menu_data() -> Dict[str, Any]:
     if callable(brand_text):
         brand_text = brand_text()
     build_number = appbuilder.app.config["BUILD_NUMBER"]
+    print("===============================================icon", appbuilder.app_icon)
     return {
         "menu": menu,
         "brand": {

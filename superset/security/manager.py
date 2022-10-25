@@ -16,6 +16,7 @@
 # under the License.
 # pylint: disable=too-many-lines
 """A set of constants and methods to manage permissions and security"""
+import jwt
 import logging
 import re
 import time
@@ -32,8 +33,11 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
+import requests
 
-from flask import current_app, Flask, g, Request
+from flask.globals import _request_ctx_stack
+from flask import current_app, Flask, g, Request, request, make_response
+# from flask.wrappers import Response
 from flask_appbuilder import Model
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from flask_appbuilder.security.sqla.manager import SecurityManager
@@ -52,7 +56,7 @@ from flask_appbuilder.security.views import (
     ViewMenuModelView,
 )
 from flask_appbuilder.widgets import ListWidget
-from flask_login import AnonymousUserMixin, LoginManager
+from flask_login import AnonymousUserMixin, LoginManager, current_user, login_user
 from jwt.api_jwt import _jwt_global_obj
 from sqlalchemy import and_, or_
 from sqlalchemy.engine.base import Connection
@@ -139,6 +143,74 @@ RoleModelView.edit_columns = ["name", "permissions", "user"]
 RoleModelView.related_views = []
 
 
+def validate_app_redirect_token(app_redirect_token):
+    ctx = _request_ctx_stack.top
+    print("app_redirect_token", app_redirect_token)
+    # service call here
+    # TODO get fqdn
+    # TODO get {user-service-type}
+    auth_service_endpoint = "http://localhost:8302/authentication/validate-app-redirect-token"
+    request_body = {"tokenId": app_redirect_token,
+                    "appId": "Analytics_Portal",
+                    "secretKey": "TrimindTech"}
+    request_headers = {"X-TARGET-TENANT-QUALIFIER": "dell",
+                       "Content-Type": "application/json; charset=utf-8"}
+    print("reqest_body", request_body)
+    access_token = requests.post(auth_service_endpoint, json=request_body,
+                                 headers=request_headers).json().get("token")
+    print("access_token", access_token)
+    decoded_access_token = jwt.decode(access_token, 'TrimindTech', algorithms=['HS512'])
+    print("decoded_access_token", decoded_access_token)
+    iam_user_details = decoded_access_token.get("iamUserDetails")
+    user_details = decoded_access_token.get("userDetails")
+    app_access_token = decoded_access_token.get("appAccessToken")
+    user_id = decoded_access_token.get("iamUserDetails").get("id")
+
+    print("userId==", user_id)
+    scopes = app_access_token.get("scopes")
+    scope_list = scopes.split(",")
+    roles = []
+    for x in scope_list:
+        print("x.find: DASHBOARD_ADMIN : ", x.find("DASHBOARD_ADMIN"))
+        if x.find("DASHBOARD_ADMIN") != -1:
+            print("roles appending dashboard_admin")
+            roles.append("dashboard_admin")
+        elif x.find("DASHBOARD_VIEW") != -1:
+            print("roles appending dashboard_viewer")
+            roles.append("dashboard_viewer")
+    # from flask.globals import request
+    from flask.wrappers import Response
+    username = iam_user_details.get("name")
+    security_manager = current_app.appbuilder.sm
+    user = security_manager.find_user(username=username)
+    print("find_user user : ", user)
+    role_objects = []
+    for role in roles:
+        role_object = security_manager.find_role(role)
+        role_objects.append(role_object)
+    if user:
+        user.roles = role_objects
+        security_manager.update_user(user)
+        print("updated user==============", user)
+    else:
+        firstname = user_details.get("firstName")
+        lastname = user_details.get("lastName")
+        email = user_details.get("email")
+        username = iam_user_details.get("name")
+        print("saving user==============:", user_details)
+        user = security_manager.add_user(username, firstname, lastname, email,
+                                         role_objects, "admin")
+        print("saved user==============", user)
+    login_user(user, remember=False)
+    g.user = user
+    ctx.user = user
+    print("g.user====after login=========", g.user)
+    print("current_user====after login===========", current_user)
+    print("calling save_token start; ctx", ctx)
+    ctx.session["_token"] = access_token
+    # current_app.session_interface.save_session(current_app, ctx.session, response)
+    print("calling save_token end")
+
 class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     SecurityManager
 ):
@@ -154,22 +226,22 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     }
 
     GAMMA_READ_ONLY_MODEL_VIEWS = {
-        "Dataset",
-        "Datasource",
-    } | READ_ONLY_MODEL_VIEWS
+                                      "Dataset",
+                                      "Datasource",
+                                  } | READ_ONLY_MODEL_VIEWS
 
     ADMIN_ONLY_VIEW_MENUS = {
-        "AccessRequestsModelView",
-        "SQL Lab",
-        "Refresh Druid Metadata",
-        "ResetPasswordView",
-        "RoleModelView",
-        "Log",
-        "Security",
-        "Row Level Security",
-        "Row Level Security Filters",
-        "RowLevelSecurityFiltersModelView",
-    } | USER_MODEL_VIEWS
+                                "AccessRequestsModelView",
+                                "SQL Lab",
+                                "Refresh Druid Metadata",
+                                "ResetPasswordView",
+                                "RoleModelView",
+                                "Log",
+                                "Security",
+                                "Row Level Security",
+                                "Row Level Security Filters",
+                                "RowLevelSecurityFiltersModelView",
+                            } | USER_MODEL_VIEWS
 
     ALPHA_ONLY_VIEW_MENUS = {
         "Manage",
@@ -375,6 +447,25 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         return True
 
     @staticmethod
+    def before_request():
+        print("Overriding the before request in security Manager")
+        g.user = current_user
+        print("================request.blueprints1==============", request.blueprints)
+        print("================request.view_args1==============", request.view_args)
+        print("================request.args1==============", request.args)
+        app_redirect_token = request.args.get('token', None)
+        if app_redirect_token:
+            validate_app_redirect_token(app_redirect_token)
+            print("app_redirect_token : ", app_redirect_token)
+        else:
+            ctx = _request_ctx_stack.top
+            print("ctx : ", ctx)
+            print(
+                "manager.before_request========.else case printing ctx user, print session=================",
+                ctx)
+            # print("manager.before_request========else case printing ctx user, print session=================", ctx.session )
+
+    @staticmethod
     def get_datasource_access_error_msg(datasource: "BaseDatasource") -> str:
         """
         Return the error message for the denied Superset datasource.
@@ -474,13 +565,13 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         for datasource_class in ConnectorRegistry.sources.values():
             user_datasources.update(
                 self.get_session.query(datasource_class)
-                .filter(
+                    .filter(
                     or_(
                         datasource_class.perm.in_(user_perms),
                         datasource_class.schema_perm.in_(schema_perms),
                     )
                 )
-                .all()
+                    .all()
             )
 
         # group all datasources by database
@@ -517,19 +608,19 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     def user_view_menu_names(self, permission_name: str) -> Set[str]:
         base_query = (
             self.get_session.query(self.viewmenu_model.name)
-            .join(self.permissionview_model)
-            .join(self.permission_model)
-            .join(assoc_permissionview_role)
-            .join(self.role_model)
+                .join(self.permissionview_model)
+                .join(self.permission_model)
+                .join(assoc_permissionview_role)
+                .join(self.role_model)
         )
 
         if not g.user.is_anonymous:
             # filter by user id
             view_menu_names = (
                 base_query.join(assoc_user_role)
-                .join(self.user_model)
-                .filter(self.user_model.id == g.user.get_id())
-                .filter(self.permission_model.name == permission_name)
+                    .join(self.user_model)
+                    .filter(self.user_model.id == g.user.get_id())
+                    .filter(self.permission_model.name == permission_name)
             ).all()
             return {s.name for s in view_menu_names}
 
@@ -575,11 +666,11 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         if perms:
             tables = (
                 self.get_session.query(SqlaTable.schema)
-                .filter(SqlaTable.database_id == database.id)
-                .filter(SqlaTable.schema.isnot(None))
-                .filter(SqlaTable.schema != "")
-                .filter(or_(SqlaTable.perm.in_(perms)))
-                .distinct()
+                    .filter(SqlaTable.database_id == database.id)
+                    .filter(SqlaTable.schema.isnot(None))
+                    .filter(SqlaTable.schema != "")
+                    .filter(or_(SqlaTable.perm.in_(perms)))
+                    .distinct()
             )
             accessible_schemas.update([table.schema for table in tables])
 
@@ -719,6 +810,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         self.set_role("Gamma", self._is_gamma_pvm)
         self.set_role("granter", self._is_granter_pvm)
         self.set_role("sql_lab", self._is_sql_lab_pvm)
+        self.set_role("dashboard_admin", self._is_admin_pvm)
+        self.set_role("dashboard_viewer", self._is_alpha_pvm)
 
         # Configure public role
         if current_app.config["PUBLIC_ROLE_LIKE"]:
@@ -946,8 +1039,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         if target.perm != target_get_perm:
             connection.execute(
                 link_table.update()
-                .where(link_table.c.id == target.id)
-                .values(perm=target_get_perm)
+                    .where(link_table.c.id == target.id)
+                    .values(perm=target_get_perm)
             )
             target.perm = target_get_perm
 
@@ -957,8 +1050,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         ):
             connection.execute(
                 link_table.update()
-                .where(link_table.c.id == target.id)
-                .values(schema_perm=target.get_schema_perm())
+                    .where(link_table.c.id == target.id)
+                    .values(schema_perm=target.get_schema_perm())
             )
             target.schema_perm = target.get_schema_perm()
 
@@ -994,8 +1087,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             if permission and view_menu:
                 pv = (
                     self.get_session.query(self.permissionview_model)
-                    .filter_by(permission=permission, view_menu=view_menu)
-                    .first()
+                        .filter_by(permission=permission, view_menu=view_menu)
+                        .first()
                 )
             if not pv and permission and view_menu:
                 permission_view_table = (
@@ -1109,8 +1202,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         session = session or self.get_session
         return (
             session.query(self.user_model)
-            .filter(self.user_model.username == username)
-            .one_or_none()
+                .filter(self.user_model.username == username)
+                .one_or_none()
         )
 
     def get_anonymous_user(self) -> User:  # pylint: disable=no-self-use
@@ -1139,7 +1232,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
                 rule
                 for rule in guest_user.rls
                 if not rule.get("dataset")
-                or str(rule.get("dataset")) == str(dataset.id)
+                   or str(rule.get("dataset")) == str(dataset.id)
             ]
         return []
 
@@ -1174,39 +1267,39 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         user_roles = [role.id for role in self.get_user_roles(user)]
         regular_filter_roles = (
             self.get_session()
-            .query(RLSFilterRoles.c.rls_filter_id)
-            .join(RowLevelSecurityFilter)
-            .filter(
+                .query(RLSFilterRoles.c.rls_filter_id)
+                .join(RowLevelSecurityFilter)
+                .filter(
                 RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.REGULAR
             )
-            .filter(RLSFilterRoles.c.role_id.in_(user_roles))
-            .subquery()
+                .filter(RLSFilterRoles.c.role_id.in_(user_roles))
+                .subquery()
         )
         base_filter_roles = (
             self.get_session()
-            .query(RLSFilterRoles.c.rls_filter_id)
-            .join(RowLevelSecurityFilter)
-            .filter(
+                .query(RLSFilterRoles.c.rls_filter_id)
+                .join(RowLevelSecurityFilter)
+                .filter(
                 RowLevelSecurityFilter.filter_type == RowLevelSecurityFilterType.BASE
             )
-            .filter(RLSFilterRoles.c.role_id.in_(user_roles))
-            .subquery()
+                .filter(RLSFilterRoles.c.role_id.in_(user_roles))
+                .subquery()
         )
         filter_tables = (
             self.get_session()
-            .query(RLSFilterTables.c.rls_filter_id)
-            .filter(RLSFilterTables.c.table_id == table.id)
-            .subquery()
+                .query(RLSFilterTables.c.rls_filter_id)
+                .filter(RLSFilterTables.c.table_id == table.id)
+                .subquery()
         )
         query = (
             self.get_session()
-            .query(
+                .query(
                 RowLevelSecurityFilter.id,
                 RowLevelSecurityFilter.group_key,
                 RowLevelSecurityFilter.clause,
             )
-            .filter(RowLevelSecurityFilter.id.in_(filter_tables))
-            .filter(
+                .filter(RowLevelSecurityFilter.id.in_(filter_tables))
+                .filter(
                 or_(
                     and_(
                         RowLevelSecurityFilter.filter_type
@@ -1307,8 +1400,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         datasource_class = type(datasource)
         query = (
             db.session.query(datasource_class)
-            .join(Slice.table)
-            .filter(datasource_class.id == datasource.id)
+                .join(Slice.table)
+                .filter(datasource_class.id == datasource.id)
         )
 
         query = DashboardAccessFilter("id", SQLAInterface(Dashboard, db.session)).apply(

@@ -63,6 +63,7 @@ const styledDisabled = (theme: SupersetTheme) => css`
 `;
 
 const StyledDiv = styled.div<{ align: string }>`
+  color: ${({ theme }) => theme.colors.grayscale.base}px;
   display: flex;
   flex-direction: row;
   justify-content: ${({ align }) => align};
@@ -258,6 +259,7 @@ const RightMenu = ({
         mode="horizontal"
         onClick={handleMenuSelection}
         onOpenChange={onMenuOpen}
+        style={{backgroundColor:"#20A7C9"}}
       >
         {!navbarRight.user_is_anonymous && showActionDropdown && (
           <SubMenu
@@ -374,7 +376,7 @@ const RightMenu = ({
                 )}
                 {navbarRight.version_sha && (
                   <div css={versionInfoStyles}>
-                    SHA: {navbarRight.version_sha}
+                    SHA1: {navbarRight.version_sha}
                   </div>
                 )}
                 {navbarRight.build_number && (
